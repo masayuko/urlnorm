@@ -66,9 +66,17 @@ SOFTWARE.
 # also update in setup.py
 __version__ = "1.1.3"
 
-from urlparse import urlparse, urlunparse
-from string import lower
 import re
+import sys
+if sys.version_info[0] == 3:
+    from urllib.parse import urlparse, urlunparse
+    xrange = range
+    byte_string = bytes
+    unicode_text = str
+else:
+    from urlparse import urlparse, urlunparse
+    byte_string = str
+    unicode_text = unicode
 
 class InvalidUrl(Exception):
     pass
@@ -107,8 +115,6 @@ params_unsafe_list = ' ?=+%#;'
 qs_unsafe_list = ' ?&=+%#'
 fragment_unsafe_list = ' +%#'
 path_unsafe_list = '/?;%+#'
-_hextochr = dict(('%02x' % i, chr(i)) for i in range(256))
-_hextochr.update(('%02X' % i, chr(i)) for i in range(256))
 
 def unquote_path(s):
     return unquote_safe(s, path_unsafe_list)
@@ -124,25 +130,28 @@ def unquote_fragment(s):
 
 def unquote_safe(s, unsafe_list):
     """unquote percent escaped string except for percent escape sequences that are in unsafe_list"""
-    # note: this build utf8 raw strings ,then does a .decode('utf8') at the end.
-    # as a result it's doing .encode('utf8') on each block of the string as it's processed.
-    res = _utf8(s).split('%')
+    # note: this build utf-8 raw strings ,then does a .decode('utf-8') at the end.
+    # as a result it's doing .encode('utf-8') on each block of the string as it's processed.
+    buf = bytearray()
+    res = _utf8(s).split(b'%')
+    if res[0] != '':
+        buf.extend(res[0])
     for i in xrange(1, len(res)):
         item = res[i]
-        try:
-            raw_chr = _hextochr[item[:2]]
-            if raw_chr in unsafe_list or ord(raw_chr) < 20:
+        raw = int(item[:2], 16)
+        if raw < 256:
+            raw_chr = chr(raw)
+            if raw_chr in unsafe_list or raw < 20:
                 # leave it unescaped (but uppercase the percent escape)
-                res[i] = '%' + item[:2].upper() + item[2:]
+                buf.append(b'%'[0])
+                buf.extend(item[:2].upper())
             else:
-                res[i] = raw_chr + item[2:]
-        except KeyError:
-            res[i] = '%' + item
-        except UnicodeDecodeError:
-            # note: i'm not sure what this does
-            res[i] = unichr(int(item[:2], 16)) + item[2:]
-    o = "".join(res)
-    return _unicode(o)
+                buf.append(raw)
+            buf.extend(item[2:])
+        else:
+            buf.append(b'%'[0])
+            buf.extend(item)
+    return buf.decode('utf-8', errors='replace')
 
 def norm(url):
     """given a string URL, return its normalized/unicode form"""
@@ -153,7 +162,7 @@ def norm(url):
 
 def norm_tuple(scheme, authority, path, parameters, query, fragment):
     """given individual url components, return its normalized form"""
-    scheme = lower(scheme)
+    scheme = scheme.lower()
     if not scheme:
         raise InvalidUrl('missing URL scheme')
     authority = norm_netloc(scheme, authority)
@@ -173,6 +182,8 @@ def norm_path(scheme, path):
         last_path = path
         while 1:
             path = _collapse.sub('/', path, 1)
+            # 'http://example.com/../foo' should normalize to 'http://example.com/foo'
+            path = re.sub('^/\.\./', '/', path)
             if last_path == path:
                 break
             last_path = path
@@ -181,7 +192,7 @@ def norm_path(scheme, path):
         return '/'
     return path
 
-MAX_IP=0xffffffffL
+MAX_IP=0xffffffff
 def int2ip(ipnum):
     assert isinstance(ipnum, int)
     if MAX_IP < ipnum or ipnum < 0:
@@ -209,7 +220,7 @@ def norm_netloc(scheme, netloc):
     if host[-1] == '.':
         host = host[:-1]
 
-    authority = lower(host)
+    authority = host.lower()
     if 'xn--' in authority:
         subdomains = [_idn(subdomain) for subdomain in authority.split('.')]
         authority = '.'.join(subdomains)
@@ -231,14 +242,14 @@ def _idn(subdomain):
 
 
 def _utf8(value):
-    if isinstance(value, unicode):
+    if isinstance(value, unicode_text):
         return value.encode("utf-8")
-    assert isinstance(value, str)
+    assert isinstance(value, byte_string)
     return value
 
 
 def _unicode(value):
-    if isinstance(value, str):
+    if isinstance(value, byte_string):
         return value.decode("utf-8")
-    assert isinstance(value, unicode)
+    assert isinstance(value, unicode_text)
     return value
